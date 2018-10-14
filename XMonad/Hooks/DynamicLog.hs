@@ -59,7 +59,7 @@ module XMonad.Hooks.DynamicLog (
 -- Useful imports
 
 import Codec.Binary.UTF8.String (encodeString)
-import Control.Monad (liftM2, msum)
+import Control.Monad ((>=>), liftM2, msum)
 import Data.Char ( isSpace, ord )
 import Data.List (intersperse, stripPrefix, isPrefixOf, sortBy)
 import Data.Maybe ( isJust, catMaybes, mapMaybe, fromMaybe )
@@ -293,7 +293,7 @@ dynamicLogString pp = do
     let ld = description . S.layout . S.workspace . S.current $ winset
 
     -- workspace list
-    let ws = pprWindowSet sort' urgents pp winset
+    ws <- pprWindowSet sort' urgents pp winset
 
     -- window title
     wt <- maybe (return "") (fmap show . getName) . S.peek $ winset
@@ -308,22 +308,41 @@ dynamicLogString pp = do
                         ]
                         ++ catMaybes extras
 
+pureX :: a -> X a
+pureX = pure
+
+purifyX :: (a -> b -> c) -> (a -> b -> X c)
+purifyX f = \a1 -> \a2 -> pure $ f a1 a2
+
 -- | Format the workspace information, given a workspace sorting function,
 --   a list of urgent windows, a pretty-printer format, and the current
 --   WindowSet.
-pprWindowSet :: WorkspaceSort -> [Window] -> PP -> WindowSet -> String
-pprWindowSet sort' urgents pp s = sepBy (ppWsSep pp) . map fmt . sort' $
-            map S.workspace (S.current s : S.visible s) ++ S.hidden s
+pprWindowSet :: WorkspaceSort -> [Window] -> PP -> WindowSet -> X String
+pprWindowSet sort' urgents pp s = fun2c fun
    where this     = S.currentTag s
          visibles = map (S.tag . S.workspace) (S.visible s)
 
+         fun = map S.workspace (S.current s : S.visible s) ++ S.hidden s
+         --fun2 = sepBy (ppWsSep pp) . map fmt . sort'
+
+         fun21 = sepBy (ppWsSep pp)
+         fun22 = mapM fmt
+         fun23 = sort'
+
+         fun25 = fun22 . fun23
+
+         fun2c = fmap fun21 . fun25
+
+     --    fun2c =( fun25 >=> (fun21)
+
          fmt w = printer pp (S.tag w)
-          where printer | any (\x -> maybe False (== S.tag w) (S.findTag x s)) urgents  = ppUrgent
-                        | S.tag w == this                                               = ppCurrent
-                        | S.tag w `elem` visibles && isJust (S.stack w)                 = ppVisible
-                        | S.tag w `elem` visibles                                       = liftM2 fromMaybe ppVisible ppVisibleNoWindows
-                        | isJust (S.stack w)                                            = ppHidden
-                        | otherwise                                                     = ppHiddenNoWindows
+          where printer | any (\x -> maybe False (== S.tag w) (S.findTag x s)) urgents  = purifyX ppUrgent
+                        | S.tag w == this                                               = ppCurrentX
+                        | S.tag w `elem` visibles && isJust (S.stack w)                 = ppVisibleX
+                       -- | S.tag w `elem` visibles                                       = (liftM2 fromMaybe ppVisible ppVisibleNoWindows)
+                        | S.tag w `elem` visibles                                       = ppVisibleX
+                        | isJust (S.stack w)                                            = ppHiddenX
+                        | otherwise                                                     = purifyX ppHiddenNoWindows
 
 -- |
 -- Workspace logger with a format designed for Xinerama:
@@ -476,12 +495,17 @@ xmobarStripTags tags = strip [] where
 -- | The 'PP' type allows the user to customize the formatting of
 --   status information.
 data PP = PP { ppCurrent :: WorkspaceId -> String
+             , ppCurrentX :: WorkspaceId -> X String
                -- ^ how to print the tag of the currently focused
                -- workspace
+
+          --   , ppCurrentX :: WorkspaceId -> X String
              , ppVisible :: WorkspaceId -> String
+             , ppVisibleX :: WorkspaceId -> X String
                -- ^ how to print tags of visible but not focused
                -- workspaces (xinerama only)
              , ppHidden  :: WorkspaceId -> String
+             , ppHiddenX  :: WorkspaceId -> X String
                -- ^ how to print tags of hidden workspaces which
                -- contain windows
              , ppHiddenNoWindows :: WorkspaceId -> String
@@ -537,8 +561,11 @@ defaultPP = def
 
 instance Default PP where
     def   = PP { ppCurrent         = wrap "[" "]"
+               , ppCurrentX        = pure . wrap "[" "]"
                , ppVisible         = wrap "<" ">"
+               , ppVisibleX        = pure. wrap "<" ">"
                , ppHidden          = id
+               , ppHiddenX         = pure . id
                , ppHiddenNoWindows = const ""
                , ppVisibleNoWindows= Nothing
                , ppUrgent          = id
